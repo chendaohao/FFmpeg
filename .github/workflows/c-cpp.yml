@@ -1,0 +1,36 @@
+name: Build FFmpeg for x86
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-ffmpeg-x86:
+    runs-on: ubuntu-18.04
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.8
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential git cmake pkg-config
+    - name: Clone FFmpeg source
+      run: |
+        git clone https://github.com/FFmpeg/FFmpeg.git
+        cd FFmpeg
+    - name: Configure FFmpeg
+      run: |
+        ./configure --arch=x86 --target-os=linux --disable-shared --enable-static
+    - name: Build FFmpeg
+      run: |
+        make
+    - name: Test FFmpeg
+      run: |
+        make check
+    - name: Install FFmpeg
+      run: |
+        sudo make install
