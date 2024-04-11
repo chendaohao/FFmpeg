@@ -1,8 +1,8 @@
 name: Build FFmpeg for x86
 
 on:
-  push:
-    branches: [ main ]
+   workflow_run:
+     branches: [ main ]
 
 jobs:
   build-ffmpeg-x86:
