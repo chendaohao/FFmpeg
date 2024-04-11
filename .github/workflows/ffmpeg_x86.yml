@@ -1,7 +1,7 @@
 name: Build FFmpeg for x86
 
 on:
-   watch:
+   push:
      branches: [ main ]
 
 jobs:
