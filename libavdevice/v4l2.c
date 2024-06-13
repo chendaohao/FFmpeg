@@ -35,6 +35,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/mem.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/time.h"
@@ -107,10 +108,10 @@ struct video_data {
     int (*open_f)(const char *file, int oflag, ...);
     int (*close_f)(int fd);
     int (*dup_f)(int fd);
-#ifdef __GLIBC__
-    int (*ioctl_f)(int fd, unsigned long int request, ...);
-#else
+#if defined(__sun) || defined(__BIONIC__) || defined(__musl__) /* POSIX-like */
     int (*ioctl_f)(int fd, int request, ...);
+#else
+    int (*ioctl_f)(int fd, unsigned long int request, ...);
 #endif
     ssize_t (*read_f)(int fd, void *buffer, size_t n);
     void *(*mmap_f)(void *start, size_t length, int prot, int flags, int fd, int64_t offset);
@@ -1134,15 +1135,15 @@ static const AVClass v4l2_class = {
     .category   = AV_CLASS_CATEGORY_DEVICE_VIDEO_INPUT,
 };
 
-const AVInputFormat ff_v4l2_demuxer = {
-    .name           = "video4linux2,v4l2",
-    .long_name      = NULL_IF_CONFIG_SMALL("Video4Linux2 device grab"),
+const FFInputFormat ff_v4l2_demuxer = {
+    .p.name          = "video4linux2,v4l2",
+    .p.long_name     = NULL_IF_CONFIG_SMALL("Video4Linux2 device grab"),
+    .p.flags         = AVFMT_NOFILE,
+    .p.priv_class    = &v4l2_class,
     .priv_data_size = sizeof(struct video_data),
     .read_probe     = v4l2_read_probe,
     .read_header    = v4l2_read_header,
     .read_packet    = v4l2_read_packet,
     .read_close     = v4l2_read_close,
     .get_device_list = v4l2_get_device_list,
-    .flags          = AVFMT_NOFILE,
-    .priv_class     = &v4l2_class,
 };

@@ -33,6 +33,7 @@
 #include "put_bits.h"
 
 #include "aac.h"
+#include "aacencdsp.h"
 #include "audio_frame_queue.h"
 #include "psymodel.h"
 
@@ -47,6 +48,20 @@ typedef enum AACCoder {
 
     AAC_CODER_NB,
 }AACCoder;
+
+/**
+ * Predictor State
+ */
+typedef struct PredictorState {
+    float cor0;
+    float cor1;
+    float var0;
+    float var1;
+    float r0;
+    float r1;
+    float k1;
+    float x_est;
+} PredictorState;
 
 typedef struct AACEncOptions {
     int coder;
@@ -227,26 +242,19 @@ typedef struct AACEncContext {
     enum RawDataBlockType cur_type;              ///< channel group type cur_channel belongs to
 
     AudioFrameQueue afq;
-    DECLARE_ALIGNED(16, int,   qcoefs)[96];      ///< quantized coefficients
+    DECLARE_ALIGNED(32, int,   qcoefs)[96];      ///< quantized coefficients
     DECLARE_ALIGNED(32, float, scoefs)[1024];    ///< scaled coefficients
 
     uint16_t quantize_band_cost_cache_generation;
     AACQuantizeBandCostCacheEntry quantize_band_cost_cache[256][128]; ///< memoization area for quantize_band_cost
 
-    void (*abs_pow34)(float *out, const float *in, const int size);
-    void (*quant_bands)(int *out, const float *in, const float *scaled,
-                        int size, int is_signed, int maxval, const float Q34,
-                        const float rounding);
+    AACEncDSPContext aacdsp;
 
     struct {
         float *samples;
     } buffer;
 } AACEncContext;
 
-void ff_aac_dsp_init(AACEncContext *s);
-void ff_aac_dsp_init_riscv(AACEncContext *s);
-void ff_aac_dsp_init_x86(AACEncContext *s);
-void ff_aac_coder_init_mips(AACEncContext *c);
 void ff_quantize_band_cost_cache_init(struct AACEncContext *s);
 
 
