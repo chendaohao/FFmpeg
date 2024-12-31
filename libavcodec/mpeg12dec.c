@@ -66,14 +66,15 @@ enum Mpeg2ClosedCaptionsFormat {
     CC_FORMAT_AUTO,
     CC_FORMAT_A53_PART4,
     CC_FORMAT_SCTE20,
-    CC_FORMAT_DVD
+    CC_FORMAT_DVD,
+    CC_FORMAT_DVB_0502
 };
 
 typedef struct Mpeg1Context {
     MpegEncContext mpeg_enc_ctx;
     int repeat_field;           /* true if we must repeat the field */
     AVPanScan pan_scan;         /* some temporary storage for the panscan */
-    AVStereo3D stereo3d;
+    enum AVStereo3DType stereo3d_type;
     int has_stereo3d;
     AVBufferRef *a53_buf_ref;
     enum Mpeg2ClosedCaptionsFormat cc_format;
@@ -92,32 +93,6 @@ typedef struct Mpeg1Context {
     int extradata_decoded;
     int64_t timecode_frame_start;  /*< GOP timecode frame start number, in non drop frame format */
 } Mpeg1Context;
-
-#define MB_TYPE_ZERO_MV   0x20000000
-
-static const uint32_t ptype2mb_type[7] = {
-                    MB_TYPE_INTRA,
-                    MB_TYPE_L0 | MB_TYPE_CBP | MB_TYPE_ZERO_MV | MB_TYPE_16x16,
-                    MB_TYPE_L0,
-                    MB_TYPE_L0 | MB_TYPE_CBP,
-    MB_TYPE_QUANT | MB_TYPE_INTRA,
-    MB_TYPE_QUANT | MB_TYPE_L0 | MB_TYPE_CBP | MB_TYPE_ZERO_MV | MB_TYPE_16x16,
-    MB_TYPE_QUANT | MB_TYPE_L0 | MB_TYPE_CBP,
-};
-
-static const uint32_t btype2mb_type[11] = {
-                    MB_TYPE_INTRA,
-                    MB_TYPE_L1,
-                    MB_TYPE_L1   | MB_TYPE_CBP,
-                    MB_TYPE_L0,
-                    MB_TYPE_L0   | MB_TYPE_CBP,
-                    MB_TYPE_L0L1,
-                    MB_TYPE_L0L1 | MB_TYPE_CBP,
-    MB_TYPE_QUANT | MB_TYPE_INTRA,
-    MB_TYPE_QUANT | MB_TYPE_L1   | MB_TYPE_CBP,
-    MB_TYPE_QUANT | MB_TYPE_L0   | MB_TYPE_CBP,
-    MB_TYPE_QUANT | MB_TYPE_L0L1 | MB_TYPE_CBP,
-};
 
 /* as H.263, but only 17 codes */
 static int mpeg_decode_motion(MpegEncContext *s, int fcode, int pred)
@@ -438,7 +413,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
         if (s->pict_type == AV_PICTURE_TYPE_P) {
             s->mb_skipped = 1;
             s->cur_pic.mb_type[s->mb_x + s->mb_y * s->mb_stride] =
-                MB_TYPE_SKIP | MB_TYPE_L0 | MB_TYPE_16x16;
+                MB_TYPE_SKIP | MB_TYPE_FORWARD_MV | MB_TYPE_16x16;
         } else {
             int mb_type;
 
@@ -483,7 +458,6 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                    "Invalid mb type in P-frame at %d %d\n", s->mb_x, s->mb_y);
             return AVERROR_INVALIDDATA;
         }
-        mb_type = ptype2mb_type[mb_type];
         break;
     case AV_PICTURE_TYPE_B:
         mb_type = get_vlc2(&s->gb, ff_mb_btype_vlc, MB_BTYPE_VLC_BITS, 1);
@@ -492,7 +466,6 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                    "Invalid mb type in B-frame at %d %d\n", s->mb_x, s->mb_y);
             return AVERROR_INVALIDDATA;
         }
-        mb_type = btype2mb_type[mb_type];
         break;
     }
     ff_tlog(s->avctx, "mb_type=%x\n", mb_type);
@@ -579,7 +552,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
             s->mv[0][0][0]      = 0;
             s->mv[0][0][1]      = 0;
         } else {
-            av_assert2(mb_type & MB_TYPE_L0L1);
+            av_assert2(mb_type & MB_TYPE_BIDIR_MV);
             // FIXME decide if MBs in field pictures are MB_TYPE_INTERLACED
             /* get additional motion vector type */
             if (s->picture_structure == PICT_FRAME && s->frame_pred_frame_dct) {
@@ -594,7 +567,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                 s->qscale = mpeg_get_qscale(s);
 
             /* motion vectors */
-            s->mv_dir = (mb_type >> 13) & 3;
+            s->mv_dir = MB_TYPE_MV_2_MV_DIR(mb_type);
             ff_tlog(s->avctx, "motion_type=%d\n", motion_type);
             switch (motion_type) {
             case MT_FRAME: /* or MT_16X8 */
@@ -602,7 +575,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                     mb_type   |= MB_TYPE_16x16;
                     s->mv_type = MV_TYPE_16X16;
                     for (i = 0; i < 2; i++) {
-                        if (USES_LIST(mb_type, i)) {
+                        if (HAS_MV(mb_type, i)) {
                             /* MT_FRAME */
                             s->mv[i][0][0]      =
                             s->last_mv[i][0][0] =
@@ -625,7 +598,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                     mb_type   |= MB_TYPE_16x8 | MB_TYPE_INTERLACED;
                     s->mv_type = MV_TYPE_16X8;
                     for (i = 0; i < 2; i++) {
-                        if (USES_LIST(mb_type, i)) {
+                        if (HAS_MV(mb_type, i)) {
                             /* MT_16X8 */
                             for (j = 0; j < 2; j++) {
                                 s->field_select[i][j] = get_bits1(&s->gb);
@@ -645,7 +618,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                 if (s->picture_structure == PICT_FRAME) {
                     mb_type |= MB_TYPE_16x8 | MB_TYPE_INTERLACED;
                     for (i = 0; i < 2; i++) {
-                        if (USES_LIST(mb_type, i)) {
+                        if (HAS_MV(mb_type, i)) {
                             for (j = 0; j < 2; j++) {
                                 s->field_select[i][j] = get_bits1(&s->gb);
                                 val = mpeg_decode_motion(s, s->mpeg_f_code[i][0],
@@ -665,7 +638,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                     av_assert0(!s->progressive_sequence);
                     mb_type |= MB_TYPE_16x16 | MB_TYPE_INTERLACED;
                     for (i = 0; i < 2; i++) {
-                        if (USES_LIST(mb_type, i)) {
+                        if (HAS_MV(mb_type, i)) {
                             s->field_select[i][0] = get_bits1(&s->gb);
                             for (k = 0; k < 2; k++) {
                                 val = mpeg_decode_motion(s, s->mpeg_f_code[i][k],
@@ -685,7 +658,7 @@ static int mpeg_decode_mb(MpegEncContext *s, int16_t block[12][64])
                 }
                 s->mv_type = MV_TYPE_DMV;
                 for (i = 0; i < 2; i++) {
-                    if (USES_LIST(mb_type, i)) {
+                    if (HAS_MV(mb_type, i)) {
                         int dmx, dmy, mx, my, m;
                         const int my_shift = s->picture_structure == PICT_FRAME;
 
@@ -1028,6 +1001,8 @@ FF_ENABLE_DEPRECATION_WARNINGS
 
         if ((ret = ff_mpv_common_init(s)) < 0)
             return ret;
+        if (!s->avctx->lowres)
+            ff_mpv_framesize_disable(&s->sc);
     }
     return 0;
 }
@@ -1304,8 +1279,6 @@ static int mpeg_field_start(Mpeg1Context *s1, const uint8_t *buf, int buf_size)
                                                     s->cur_pic.linesize[i]);
                 }
                 s->cur_pic.linesize[i]  *= 2;
-                s->last_pic.linesize[i] *= 2;
-                s->next_pic.linesize[i] *= 2;
             }
         }
 
@@ -1335,7 +1308,7 @@ static int mpeg_field_start(Mpeg1Context *s1, const uint8_t *buf, int buf_size)
         if (s1->a53_buf_ref) {
             ret = ff_frame_new_side_data_from_buf(
                 s->avctx, s->cur_pic.ptr->f, AV_FRAME_DATA_A53_CC,
-                &s1->a53_buf_ref, NULL);
+                &s1->a53_buf_ref);
             if (ret < 0)
                 return ret;
         }
@@ -1345,7 +1318,7 @@ static int mpeg_field_start(Mpeg1Context *s1, const uint8_t *buf, int buf_size)
             if (!stereo)
                 return AVERROR(ENOMEM);
 
-            *stereo = s1->stereo3d;
+            stereo->type = s1->stereo3d_type;
             s1->has_stereo3d = 0;
         }
 
@@ -1902,6 +1875,8 @@ static int vcr2_init_sequence(AVCodecContext *avctx)
 
     if ((ret = ff_mpv_common_init(s)) < 0)
         return ret;
+    if (!s->avctx->lowres)
+        ff_mpv_framesize_disable(&s->sc);
 
     for (i = 0; i < 64; i++) {
         int j = s->idsp.idct_permutation[i];
@@ -1943,6 +1918,8 @@ static void mpeg_set_cc_format(AVCodecContext *avctx, enum Mpeg2ClosedCaptionsFo
 
         av_log(avctx, AV_LOG_DEBUG, "CC: first seen substream is %s format\n", label);
     }
+
+    avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
 }
 
 static int mpeg_decode_a53_cc(AVCodecContext *avctx,
@@ -1969,7 +1946,6 @@ static int mpeg_decode_a53_cc(AVCodecContext *avctx,
             if (ret >= 0)
                 memcpy(s1->a53_buf_ref->data + old_size, p + 7, cc_count * UINT64_C(3));
 
-            avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
             mpeg_set_cc_format(avctx, CC_FORMAT_A53_PART4, "A/53 Part 4");
         }
         return 1;
@@ -2019,7 +1995,6 @@ static int mpeg_decode_a53_cc(AVCodecContext *avctx,
                 }
             }
 
-            avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
             mpeg_set_cc_format(avctx, CC_FORMAT_SCTE20, "SCTE-20");
         }
         return 1;
@@ -2082,8 +2057,69 @@ static int mpeg_decode_a53_cc(AVCodecContext *avctx,
                 }
             }
 
-            avctx->properties |= FF_CODEC_PROPERTY_CLOSED_CAPTIONS;
             mpeg_set_cc_format(avctx, CC_FORMAT_DVD, "DVD");
+        }
+        return 1;
+    } else if ((!s1->cc_format || s1->cc_format == CC_FORMAT_DVB_0502) &&
+               buf_size >= 12 &&
+               p[0] == 0x05 && p[1] == 0x02) {
+        /* extract DVB 0502 CC data */
+        const uint8_t cc_header = 0xf8 | 0x04 /* valid */ | 0x00 /* line 21 field 1 */;
+        uint8_t cc_data[4] = {0};
+        int cc_count = 0;
+        uint8_t dvb_cc_type = p[7];
+        p += 8;
+        buf_size -= 8;
+
+        if (dvb_cc_type == 0x05 && buf_size >= 7) {
+            dvb_cc_type = p[6];
+            p += 7;
+            buf_size -= 7;
+        }
+
+        if (dvb_cc_type == 0x02 && buf_size >= 4) { /* 2-byte caption, can be repeated */
+            cc_count = 1;
+            cc_data[0] = p[1];
+            cc_data[1] = p[2];
+            dvb_cc_type = p[3];
+
+            /* Only repeat characters when the next type flag
+             * is 0x04 and the characters are repeatable (i.e., less than
+             * 32 with the parity stripped).
+             */
+            if (dvb_cc_type == 0x04 && (cc_data[0] & 0x7f) < 32) {
+                cc_count = 2;
+                cc_data[2] = cc_data[0];
+                cc_data[3] = cc_data[1];
+            }
+        } else if (dvb_cc_type == 0x04 && buf_size >= 5) { /* 4-byte caption, not repeated */
+            cc_count = 2;
+            cc_data[0] = p[1];
+            cc_data[1] = p[2];
+            cc_data[2] = p[3];
+            cc_data[3] = p[4];
+        }
+
+        if (cc_count > 0) {
+            int ret;
+            int old_size = s1->a53_buf_ref ? s1->a53_buf_ref->size : 0;
+            const uint64_t new_size = (old_size + cc_count * UINT64_C(3));
+            if (new_size > 3 * A53_MAX_CC_COUNT)
+                return AVERROR(EINVAL);
+
+            ret = av_buffer_realloc(&s1->a53_buf_ref, new_size);
+            if (ret >= 0) {
+                s1->a53_buf_ref->data[0] = cc_header;
+                s1->a53_buf_ref->data[1] = cc_data[0];
+                s1->a53_buf_ref->data[2] = cc_data[1];
+                if (cc_count == 2) {
+                    s1->a53_buf_ref->data[3] = cc_header;
+                    s1->a53_buf_ref->data[4] = cc_data[2];
+                    s1->a53_buf_ref->data[5] = cc_data[3];
+                }
+            }
+
+            mpeg_set_cc_format(avctx, CC_FORMAT_DVB_0502, "DVB 0502");
         }
         return 1;
     }
@@ -2142,16 +2178,16 @@ static void mpeg_decode_user_data(AVCodecContext *avctx,
 
             switch (S3D_video_format_type) {
             case 0x03:
-                s1->stereo3d.type = AV_STEREO3D_SIDEBYSIDE;
+                s1->stereo3d_type = AV_STEREO3D_SIDEBYSIDE;
                 break;
             case 0x04:
-                s1->stereo3d.type = AV_STEREO3D_TOPBOTTOM;
+                s1->stereo3d_type = AV_STEREO3D_TOPBOTTOM;
                 break;
             case 0x08:
-                s1->stereo3d.type = AV_STEREO3D_2D;
+                s1->stereo3d_type = AV_STEREO3D_2D;
                 break;
             case 0x23:
-                s1->stereo3d.type = AV_STEREO3D_SIDEBYSIDE_QUINCUNX;
+                s1->stereo3d_type = AV_STEREO3D_SIDEBYSIDE_QUINCUNX;
                 break;
             }
         }
@@ -2656,6 +2692,8 @@ static const AVOption mpeg2video_options[] = {
         { .i64 =   CC_FORMAT_SCTE20 },              .flags = M2V_PARAM, .unit = "cc_format" },
        { "dvd",    "pick DVD CC substream",         0, AV_OPT_TYPE_CONST,
         { .i64 =   CC_FORMAT_DVD },                 .flags = M2V_PARAM, .unit = "cc_format" },
+       { "dvb_0502", "pick DVB 0502 CC substream",  0, AV_OPT_TYPE_CONST,
+        { .i64 =   CC_FORMAT_DVB_0502 },            .flags = M2V_PARAM, .unit = "cc_format" },
     { NULL }
 };
 

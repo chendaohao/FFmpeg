@@ -43,8 +43,8 @@ static const uint8_t l0_l1_cand_idx[12][2] = {
 void ff_hevc_set_neighbour_available(HEVCLocalContext *lc, int x0, int y0,
                                      int nPbW, int nPbH, int log2_ctb_size)
 {
-    int x0b = av_mod_uintp2(x0, log2_ctb_size);
-    int y0b = av_mod_uintp2(y0, log2_ctb_size);
+    int x0b = av_zero_extend(x0, log2_ctb_size);
+    int y0b = av_zero_extend(y0, log2_ctb_size);
 
     lc->na.cand_up       = (lc->ctb_up_flag   || y0b);
     lc->na.cand_left     = (lc->ctb_left_flag || x0b);
@@ -211,7 +211,7 @@ static int derive_temporal_colocated_mvs(const HEVCContext *s, MvField temp_col,
 #define DERIVE_TEMPORAL_COLOCATED_MVS                                   \
     derive_temporal_colocated_mvs(s, temp_col,                          \
                                   refIdxLx, mvLXCol, X, colPic,         \
-                                  ff_hevc_get_ref_list(s, ref, x, y))
+                                  ff_hevc_get_ref_list(ref, x, y))
 
 /*
  * 8.5.3.1.7  temporal luma motion vector prediction

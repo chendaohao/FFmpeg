@@ -157,6 +157,7 @@ static int lead_decode_frame(AVCodecContext *avctx, AVFrame * frame,
         zero = 1;
         avctx->pix_fmt = AV_PIX_FMT_YUV420P;
         break;
+    case 0x6:
     case 0x8000:
         yuv20p_half = 1;
         // fall-through
@@ -194,7 +195,9 @@ static int lead_decode_frame(AVCodecContext *avctx, AVFrame * frame,
             i++;
     }
 
-    init_get_bits8(&gb, s->bitstream_buf, size);
+    ret = init_get_bits8(&gb, s->bitstream_buf, size);
+    if (ret < 0)
+        return ret;
 
     if (avctx->pix_fmt == AV_PIX_FMT_YUV420P && zero) {
         for (int mb_y = 0; mb_y < avctx->height / 8; mb_y++)

@@ -41,7 +41,7 @@
 #include "mpegutils.h"
 #include "mpegvideo.h"
 #include "mpegvideodata.h"
-#include "refstruct.h"
+#include "libavutil/refstruct.h"
 
 static void dct_unquantize_mpeg1_intra_c(MpegEncContext *s,
                                    int16_t *block, int n, int qscale)
@@ -110,8 +110,7 @@ static void dct_unquantize_mpeg2_intra_c(MpegEncContext *s,
     if (s->q_scale_type) qscale = ff_mpeg2_non_linear_qscale[qscale];
     else                 qscale <<= 1;
 
-    if(s->alternate_scan) nCoeffs= 63;
-    else nCoeffs= s->block_last_index[n];
+    nCoeffs= s->block_last_index[n];
 
     block[0] *= n < 4 ? s->y_dc_scale : s->c_dc_scale;
     quant_matrix = s->intra_matrix;
@@ -141,8 +140,7 @@ static void dct_unquantize_mpeg2_intra_bitexact(MpegEncContext *s,
     if (s->q_scale_type) qscale = ff_mpeg2_non_linear_qscale[qscale];
     else                 qscale <<= 1;
 
-    if(s->alternate_scan) nCoeffs= 63;
-    else nCoeffs= s->block_last_index[n];
+    nCoeffs= s->block_last_index[n];
 
     block[0] *= n < 4 ? s->y_dc_scale : s->c_dc_scale;
     sum += block[0];
@@ -175,8 +173,7 @@ static void dct_unquantize_mpeg2_inter_c(MpegEncContext *s,
     if (s->q_scale_type) qscale = ff_mpeg2_non_linear_qscale[qscale];
     else                 qscale <<= 1;
 
-    if(s->alternate_scan) nCoeffs= 63;
-    else nCoeffs= s->block_last_index[n];
+    nCoeffs= s->block_last_index[n];
 
     quant_matrix = s->inter_matrix;
     for(i=0; i<=nCoeffs; i++) {
@@ -273,7 +270,7 @@ static void gray8(uint8_t *dst, const uint8_t *src, ptrdiff_t linesize, int h)
 }
 
 /* init common dct for both encoder and decoder */
-static av_cold int dct_init(MpegEncContext *s)
+static av_cold void dsp_init(MpegEncContext *s)
 {
     ff_blockdsp_init(&s->bdsp);
     ff_hpeldsp_init(&s->hdsp, s->avctx->flags);
@@ -291,52 +288,18 @@ static av_cold int dct_init(MpegEncContext *s)
             s->hdsp.put_no_rnd_pixels_tab[1][i] = gray8;
         }
     }
-
-    s->dct_unquantize_h263_intra = dct_unquantize_h263_intra_c;
-    s->dct_unquantize_h263_inter = dct_unquantize_h263_inter_c;
-    s->dct_unquantize_mpeg1_intra = dct_unquantize_mpeg1_intra_c;
-    s->dct_unquantize_mpeg1_inter = dct_unquantize_mpeg1_inter_c;
-    s->dct_unquantize_mpeg2_intra = dct_unquantize_mpeg2_intra_c;
-    if (s->avctx->flags & AV_CODEC_FLAG_BITEXACT)
-        s->dct_unquantize_mpeg2_intra = dct_unquantize_mpeg2_intra_bitexact;
-    s->dct_unquantize_mpeg2_inter = dct_unquantize_mpeg2_inter_c;
-
-#if HAVE_INTRINSICS_NEON
-    ff_mpv_common_init_neon(s);
-#endif
-
-#if ARCH_ALPHA
-    ff_mpv_common_init_axp(s);
-#elif ARCH_ARM
-    ff_mpv_common_init_arm(s);
-#elif ARCH_PPC
-    ff_mpv_common_init_ppc(s);
-#elif ARCH_X86
-    ff_mpv_common_init_x86(s);
-#elif ARCH_MIPS
-    ff_mpv_common_init_mips(s);
-#endif
-
-    return 0;
 }
 
 av_cold void ff_init_scantable(const uint8_t *permutation, ScanTable *st,
                                const uint8_t *src_scantable)
 {
-    int end;
-
     st->scantable = src_scantable;
 
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0, end = -1; i < 64; i++) {
         int j = src_scantable[i];
         st->permutated[i] = permutation[j];
-    }
-
-    end = -1;
-    for (int i = 0; i < 64; i++) {
-        int j = st->permutated[i];
-        if (j > end)
-            end = j;
+        if (permutation[j] > end)
+            end = permutation[j];
         st->raster_end[i] = end;
     }
 }
@@ -361,6 +324,29 @@ av_cold void ff_mpv_idct_init(MpegEncContext *s)
                          s->idsp.idct_permutation);
     ff_permute_scantable(s->permutated_intra_v_scantable, ff_alternate_vertical_scan,
                          s->idsp.idct_permutation);
+
+    s->dct_unquantize_h263_intra  = dct_unquantize_h263_intra_c;
+    s->dct_unquantize_h263_inter  = dct_unquantize_h263_inter_c;
+    s->dct_unquantize_mpeg1_intra = dct_unquantize_mpeg1_intra_c;
+    s->dct_unquantize_mpeg1_inter = dct_unquantize_mpeg1_inter_c;
+    s->dct_unquantize_mpeg2_intra = dct_unquantize_mpeg2_intra_c;
+    if (s->avctx->flags & AV_CODEC_FLAG_BITEXACT)
+        s->dct_unquantize_mpeg2_intra = dct_unquantize_mpeg2_intra_bitexact;
+    s->dct_unquantize_mpeg2_inter = dct_unquantize_mpeg2_inter_c;
+
+#if HAVE_INTRINSICS_NEON
+    ff_mpv_common_init_neon(s);
+#endif
+
+#if ARCH_ARM
+    ff_mpv_common_init_arm(s);
+#elif ARCH_PPC
+    ff_mpv_common_init_ppc(s);
+#elif ARCH_X86
+    ff_mpv_common_init_x86(s);
+#elif ARCH_MIPS
+    ff_mpv_common_init_mips(s);
+#endif
 }
 
 static int init_duplicate_context(MpegEncContext *s)
@@ -513,11 +499,11 @@ void ff_mpv_common_defaults(MpegEncContext *s)
 
 static void free_buffer_pools(BufferPoolContext *pools)
 {
-    ff_refstruct_pool_uninit(&pools->mbskip_table_pool);
-    ff_refstruct_pool_uninit(&pools->qscale_table_pool);
-    ff_refstruct_pool_uninit(&pools->mb_type_pool);
-    ff_refstruct_pool_uninit(&pools->motion_val_pool);
-    ff_refstruct_pool_uninit(&pools->ref_index_pool);
+    av_refstruct_pool_uninit(&pools->mbskip_table_pool);
+    av_refstruct_pool_uninit(&pools->qscale_table_pool);
+    av_refstruct_pool_uninit(&pools->mb_type_pool);
+    av_refstruct_pool_uninit(&pools->motion_val_pool);
+    av_refstruct_pool_uninit(&pools->ref_index_pool);
     pools->alloc_mb_height = pools->alloc_mb_width = pools->alloc_mb_stride = 0;
 }
 
@@ -571,7 +557,7 @@ int ff_mpv_init_context_frame(MpegEncContext *s)
     s->mb_index2xy[s->mb_height * s->mb_width] = (s->mb_height - 1) * s->mb_stride + s->mb_width; // FIXME really needed?
 
 #define ALLOC_POOL(name, size, flags) do { \
-    pools->name ##_pool = ff_refstruct_pool_alloc((size), (flags)); \
+    pools->name ##_pool = av_refstruct_pool_alloc((size), (flags)); \
     if (!pools->name ##_pool) \
         return AVERROR(ENOMEM); \
 } while (0)
@@ -592,7 +578,7 @@ int ff_mpv_init_context_frame(MpegEncContext *s)
         }
         if (s->codec_id == AV_CODEC_ID_MPEG4) {
             ALLOC_POOL(mbskip_table, mb_array_size + 2,
-                       !s->encoding ? FF_REFSTRUCT_POOL_FLAG_ZERO_EVERY_TIME : 0);
+                       !s->encoding ? AV_REFSTRUCT_POOL_FLAG_ZERO_EVERY_TIME : 0);
             if (!s->encoding) {
                 /* cbp, pred_dir */
                 if (!(s->cbp_table      = av_mallocz(mb_array_size)) ||
@@ -640,7 +626,7 @@ int ff_mpv_init_context_frame(MpegEncContext *s)
         /* FIXME: The output of H.263 with OBMC depends upon
          * the earlier content of the buffer; therefore we set
          * the flags to always reset returned buffers here. */
-        ALLOC_POOL(motion_val, mv_size, FF_REFSTRUCT_POOL_FLAG_ZERO_EVERY_TIME);
+        ALLOC_POOL(motion_val, mv_size, AV_REFSTRUCT_POOL_FLAG_ZERO_EVERY_TIME);
         ALLOC_POOL(ref_index, ref_index_size, 0);
     }
 #undef ALLOC_POOL
@@ -720,7 +706,7 @@ av_cold int ff_mpv_common_init(MpegEncContext *s)
         av_image_check_size(s->width, s->height, 0, s->avctx))
         return AVERROR(EINVAL);
 
-    dct_init(s);
+    dsp_init(s);
 
     /* set chroma shifts */
     ret = av_pix_fmt_get_chroma_sub_sample(s->avctx->pix_fmt,

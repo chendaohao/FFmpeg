@@ -166,6 +166,7 @@ static av_cold int che_configure(AACDecContext *ac,
             ac->proc.sbr_ctx_close(ac->che[type][id]);
         }
         av_freep(&ac->che[type][id]);
+        memset(ac->output_element, 0, sizeof(ac->output_element));
     }
     return 0;
 }
@@ -537,7 +538,9 @@ static av_cold void flush(AVCodecContext *avctx)
         }
     }
 
+#if CONFIG_AAC_DECODER
     ff_aac_usac_reset_state(ac, &ac->oc[1]);
+#endif
 }
 
 /**
@@ -1095,31 +1098,17 @@ static int decode_audio_specific_config(AACDecContext *ac,
                                            sync_extension);
 }
 
-static int sample_rate_idx (int rate)
-{
-         if (92017 <= rate) return 0;
-    else if (75132 <= rate) return 1;
-    else if (55426 <= rate) return 2;
-    else if (46009 <= rate) return 3;
-    else if (37566 <= rate) return 4;
-    else if (27713 <= rate) return 5;
-    else if (23004 <= rate) return 6;
-    else if (18783 <= rate) return 7;
-    else if (13856 <= rate) return 8;
-    else if (11502 <= rate) return 9;
-    else if (9391  <= rate) return 10;
-    else                    return 11;
-}
-
 static av_cold int decode_close(AVCodecContext *avctx)
 {
     AACDecContext *ac = avctx->priv_data;
 
     for (int i = 0; i < 2; i++) {
         OutputConfiguration *oc = &ac->oc[i];
+        av_channel_layout_uninit(&ac->oc[i].ch_layout);
+
         AACUSACConfig *usac = &oc->usac;
         for (int j = 0; j < usac->nb_elems; j++) {
-            AACUsacElemConfig *ec = &usac->elems[i];
+            AACUsacElemConfig *ec = &usac->elems[j];
             av_freep(&ec->ext.pl_data);
         }
     }
@@ -1211,7 +1200,7 @@ av_cold int ff_aac_decode_init(AVCodecContext *avctx)
         uint8_t layout_map[MAX_ELEM_ID*4][3];
         int layout_map_tags;
 
-        sr = sample_rate_idx(avctx->sample_rate);
+        sr = ff_aac_sample_rate_idx(avctx->sample_rate);
         ac->oc[1].m4ac.sampling_index = sr;
         ac->oc[1].m4ac.channels = avctx->ch_layout.nb_channels;
         ac->oc[1].m4ac.sbr = -1;
@@ -2209,6 +2198,7 @@ static int aac_decode_er_frame(AVCodecContext *avctx, AVFrame *frame,
 
     ac->frame->nb_samples = samples;
     ac->frame->sample_rate = avctx->sample_rate;
+    ac->frame->flags |= AV_FRAME_FLAG_KEY;
     *got_frame_ptr = 1;
 
     skip_bits_long(gb, get_bits_left(gb));
@@ -2369,6 +2359,7 @@ static int decode_frame_ga(AVCodecContext *avctx, AACDecContext *ac,
     if (samples) {
         ac->frame->nb_samples = samples;
         ac->frame->sample_rate = avctx->sample_rate;
+        ac->frame->flags |= AV_FRAME_FLAG_KEY;
         *got_frame_ptr = 1;
     } else {
         av_frame_unref(ac->frame);

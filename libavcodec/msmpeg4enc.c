@@ -71,8 +71,7 @@ void ff_msmpeg4_code012(PutBitContext *pb, int n)
     if (n == 0) {
         put_bits(pb, 1, 0);
     } else {
-        put_bits(pb, 1, 1);
-        put_bits(pb, 1, (n >= 2));
+        put_bits(pb, 2, 2 | (n >= 2));
     }
 }
 
@@ -682,6 +681,7 @@ const FFCodec ff_msmpeg4v2_encoder = {
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_MSMPEG4V2,
     .p.pix_fmts     = (const enum AVPixelFormat[]){ AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE },
+    .color_ranges   = AVCOL_RANGE_MPEG,
     .p.priv_class   = &ff_mpv_enc_class,
     .p.capabilities = AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
@@ -697,6 +697,7 @@ const FFCodec ff_msmpeg4v3_encoder = {
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_MSMPEG4V3,
     .p.pix_fmts     = (const enum AVPixelFormat[]){ AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE },
+    .color_ranges   = AVCOL_RANGE_MPEG,
     .p.priv_class   = &ff_mpv_enc_class,
     .p.capabilities = AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
@@ -712,6 +713,7 @@ const FFCodec ff_wmv1_encoder = {
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_WMV1,
     .p.pix_fmts     = (const enum AVPixelFormat[]){ AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE },
+    .color_ranges   = AVCOL_RANGE_MPEG,
     .p.priv_class   = &ff_mpv_enc_class,
     .p.capabilities = AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,

@@ -217,6 +217,9 @@ static av_cold int encode_init(AVCodecContext *avctx)
     mcf(12,12)
 
     ff_me_cmp_init(&enc->mecc, avctx);
+    ret = ff_me_init(&enc->m.me, avctx, &enc->mecc, 0);
+    if (ret < 0)
+        return ret;
     ff_mpegvideoencdsp_init(&enc->mpvencdsp, avctx);
 
     ff_snow_alloc_blocks(s);
@@ -277,11 +280,6 @@ static av_cold int encode_init(AVCodecContext *avctx)
                                            &s->chroma_v_shift);
     if (ret)
         return ret;
-
-    ret  = ff_set_cmp(&enc->mecc, enc->mecc.me_cmp, s->avctx->me_cmp);
-    ret |= ff_set_cmp(&enc->mecc, enc->mecc.me_sub_cmp, s->avctx->me_sub_cmp);
-    if (ret < 0)
-        return AVERROR(EINVAL);
 
     s->input_picture = av_frame_alloc();
     if (!s->input_picture)
@@ -413,6 +411,7 @@ static int encode_q_branch(SnowEncContext *enc, int level, int x, int y)
     int my_context= av_log2(2*FFABS(left->my - top->my));
     int s_context= 2*left->level + 2*top->level + tl->level + tr->level;
     int ref, best_ref, ref_score, ref_mx, ref_my;
+    int range = MAX_MV >> (1 + qpel);
 
     av_assert0(sizeof(s->block_state) >= 256);
     if(s->keyframe){
@@ -453,6 +452,11 @@ static int encode_q_branch(SnowEncContext *enc, int level, int x, int y)
     c->ymin = - y*block_w - 16+3;
     c->xmax = - (x+1)*block_w + (w<<(LOG2_MB_SIZE - s->block_max_depth)) + 16-3;
     c->ymax = - (y+1)*block_w + (h<<(LOG2_MB_SIZE - s->block_max_depth)) + 16-3;
+
+    c->xmin = FFMAX(c->xmin,-range);
+    c->xmax = FFMIN(c->xmax, range);
+    c->ymin = FFMAX(c->ymin,-range);
+    c->ymax = FFMIN(c->ymax, range);
 
     if(P_LEFT[0]     > (c->xmax<<shift)) P_LEFT[0]    = (c->xmax<<shift);
     if(P_LEFT[1]     > (c->ymax<<shift)) P_LEFT[1]    = (c->ymax<<shift);
@@ -711,7 +715,7 @@ static int get_dc(SnowEncContext *enc, int mb_x, int mb_y, int plane_index)
     }
     *b= backup;
 
-    return av_clip_uint8( ROUNDED_DIV(ab<<LOG2_OBMC_MAX, aa) ); //FIXME we should not need clipping
+    return av_clip_uint8( ROUNDED_DIV((int64_t)ab<<LOG2_OBMC_MAX, aa) ); //FIXME we should not need clipping
 }
 
 static inline int get_block_bits(SnowContext *s, int x, int y, int w){
@@ -834,12 +838,12 @@ static int get_block_rd(SnowEncContext *enc, int mb_x, int mb_y,
             distortion = 0;
             for(i=0; i<4; i++){
                 int off = sx+16*(i&1) + (sy+16*(i>>1))*ref_stride;
-                distortion += enc->mecc.me_cmp[0](&enc->m, src + off, dst + off, ref_stride, 16);
+                distortion += enc->m.me.me_cmp[0](&enc->m, src + off, dst + off, ref_stride, 16);
             }
         }
     }else{
         av_assert2(block_w==8);
-        distortion = enc->mecc.me_cmp[0](&enc->m, src + sx + sy*ref_stride, dst + sx + sy*ref_stride, ref_stride, block_w*2);
+        distortion = enc->m.me.me_cmp[0](&enc->m, src + sx + sy*ref_stride, dst + sx + sy*ref_stride, ref_stride, block_w*2);
     }
 
     if(plane_index==0){
@@ -905,7 +909,7 @@ static int get_4block_rd(SnowEncContext *enc, int mb_x, int mb_y, int plane_inde
         }
 
         av_assert1(block_w== 8 || block_w==16);
-        distortion += enc->mecc.me_cmp[block_w==8](&enc->m, src + x + y*ref_stride, dst + x + y*ref_stride, ref_stride, block_h);
+        distortion += enc->m.me.me_cmp[block_w==8](&enc->m, src + x + y*ref_stride, dst + x + y*ref_stride, ref_stride, block_h);
     }
 
     if(plane_index==0){
@@ -1871,12 +1875,10 @@ static int encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         mpv->qscale = (mpv->lambda*139 + FF_LAMBDA_SCALE*64) >> (FF_LAMBDA_SHIFT + 7);
         enc->lambda2  = mpv->lambda2 = (mpv->lambda*mpv->lambda + FF_LAMBDA_SCALE/2) >> FF_LAMBDA_SHIFT;
 
-        mpv->mecc = enc->mecc; //move
         mpv->qdsp = enc->qdsp; //move
         mpv->hdsp = s->hdsp;
-        ff_init_me(&enc->m);
+        ff_me_init_pic(&enc->m);
         s->hdsp = mpv->hdsp;
-        enc->mecc = mpv->mecc;
     }
 
     if (enc->pass1_rc) {
@@ -2144,6 +2146,7 @@ const FFCodec ff_snow_encoder = {
         AV_PIX_FMT_GRAY8,
         AV_PIX_FMT_NONE
     },
+    .color_ranges   = AVCOL_RANGE_MPEG,
     .p.priv_class   = &snowenc_class,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

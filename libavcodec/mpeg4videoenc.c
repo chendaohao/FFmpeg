@@ -673,7 +673,7 @@ void ff_mpeg4_encode_mb(MpegEncContext *s, int16_t block[6][64],
                             }
                             diff = diff * 256 / (xe * ye);
                         } else {
-                            diff = s->mecc.sad[0](NULL, p_pic, b_pic, s->linesize, 16);
+                            diff = s->sad_cmp[0](NULL, p_pic, b_pic, s->linesize, 16);
                         }
                         if (diff > s->qscale * 70) {  // FIXME check that 70 is optimal
                             s->mb_skipped = 0;
@@ -1358,7 +1358,7 @@ void ff_mpeg4_encode_video_packet_header(MpegEncContext *s)
     put_bits(&s->pb, 1, 1);
 
     put_bits(&s->pb, mb_num_bits, s->mb_x + s->mb_y * s->mb_width);
-    put_bits(&s->pb, s->quant_precision, s->qscale);
+    put_bits(&s->pb, 5 /* quant_precision */, s->qscale);
     put_bits(&s->pb, 1, 0); /* no HEC */
 }
 
@@ -1393,6 +1393,7 @@ const FFCodec ff_mpeg4_encoder = {
     FF_CODEC_ENCODE_CB(ff_mpv_encode_picture),
     .close          = ff_mpv_encode_end,
     .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE },
+    .color_ranges   = AVCOL_RANGE_MPEG,
     .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_SLICE_THREADS |
                       AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,

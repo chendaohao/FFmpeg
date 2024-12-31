@@ -35,7 +35,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "drawutils.h"
-#include "internal.h"
+#include "filters.h"
 #include "video.h"
 #include "lut3d.h"
 
@@ -703,7 +703,8 @@ try_again:
                                 else if (!strncmp(line + 7, "MAX ", 4)) vals = max;
                                 if (!vals)
                                     return AVERROR_INVALIDDATA;
-                                av_sscanf(line + 11, "%f %f %f", vals, vals + 1, vals + 2);
+                                if (av_sscanf(line + 11, "%f %f %f", vals, vals + 1, vals + 2) != 3)
+                                    return AVERROR_INVALIDDATA;
                                 av_log(ctx, AV_LOG_DEBUG, "min: %f %f %f | max: %f %f %f\n",
                                        min[0], min[1], min[2], max[0], max[1], max[2]);
                                 goto try_again;
@@ -1176,6 +1177,9 @@ static AVFrame *apply_lut(AVFilterLink *inlink, AVFrame *in)
         }
         av_frame_copy_props(out, in);
     }
+
+    av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data,
+                                       AV_SIDE_DATA_PROP_COLOR_DEPENDENT);
 
     td.in  = in;
     td.out = out;
@@ -1734,12 +1738,14 @@ try_again:
                         else if (!strncmp(line + 7, "MAX ", 4)) vals = max;
                         if (!vals)
                             return AVERROR_INVALIDDATA;
-                        av_sscanf(line + 11, "%f %f %f", vals, vals + 1, vals + 2);
+                        if (av_sscanf(line + 11, "%f %f %f", vals, vals + 1, vals + 2) != 3)
+                            return AVERROR_INVALIDDATA;
                         av_log(ctx, AV_LOG_DEBUG, "min: %f %f %f | max: %f %f %f\n",
                                min[0], min[1], min[2], max[0], max[1], max[2]);
                         goto try_again;
                     } else if (!strncmp(line, "LUT_1D_INPUT_RANGE ", 19)) {
-                        av_sscanf(line + 19, "%f %f", min, max);
+                        if (av_sscanf(line + 19, "%f %f", min, max) != 2)
+                            return AVERROR_INVALIDDATA;
                         min[1] = min[2] = min[0];
                         max[1] = max[2] = max[0];
                         goto try_again;

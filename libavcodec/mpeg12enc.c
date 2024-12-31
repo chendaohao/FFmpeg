@@ -137,16 +137,15 @@ av_cold void ff_mpeg1_init_uni_ac_vlc(const int8_t max_level[],
 }
 
 #if CONFIG_MPEG1VIDEO_ENCODER || CONFIG_MPEG2VIDEO_ENCODER
-static int find_frame_rate_index(MPEG12EncContext *mpeg12)
+static int find_frame_rate_index(AVCodecContext *avctx, MPEG12EncContext *mpeg12)
 {
-    MpegEncContext *const s = &mpeg12->mpeg;
     int i;
     AVRational bestq = (AVRational) {0, 0};
     AVRational ext;
-    AVRational target = av_inv_q(s->avctx->time_base);
+    AVRational target = av_inv_q(avctx->time_base);
 
     for (i = 1; i < 14; i++) {
-        if (s->avctx->strict_std_compliance > FF_COMPLIANCE_UNOFFICIAL &&
+        if (avctx->strict_std_compliance > FF_COMPLIANCE_UNOFFICIAL &&
             i >= 9)
             break;
 
@@ -154,7 +153,7 @@ static int find_frame_rate_index(MPEG12EncContext *mpeg12)
             for (ext.den=1; ext.den <= 32; ext.den++) {
                 AVRational q = av_mul_q(ext, ff_mpeg12_frame_rate_tab[i]);
 
-                if (s->codec_id != AV_CODEC_ID_MPEG2VIDEO && (ext.den!=1 || ext.num!=1))
+                if (avctx->codec_id != AV_CODEC_ID_MPEG2VIDEO && (ext.den!=1 || ext.num!=1))
                     continue;
                 if (av_gcd(ext.den, ext.num) != 1)
                     continue;
@@ -180,7 +179,6 @@ static int find_frame_rate_index(MPEG12EncContext *mpeg12)
 static av_cold int encode_init(AVCodecContext *avctx)
 {
     MPEG12EncContext *const mpeg12 = avctx->priv_data;
-    MpegEncContext *const s = &mpeg12->mpeg;
     int ret;
     int max_size = avctx->codec_id == AV_CODEC_ID_MPEG2VIDEO ? 16383 : 4095;
 
@@ -237,7 +235,7 @@ static av_cold int encode_init(AVCodecContext *avctx)
     if ((ret = ff_mpv_encode_init(avctx)) < 0)
         return ret;
 
-    if (find_frame_rate_index(mpeg12) < 0) {
+    if (find_frame_rate_index(avctx, mpeg12) < 0) {
         if (avctx->strict_std_compliance > FF_COMPLIANCE_EXPERIMENTAL) {
             av_log(avctx, AV_LOG_ERROR, "MPEG-1/2 does not support %d/%d fps\n",
                    avctx->time_base.den, avctx->time_base.num);
@@ -259,7 +257,7 @@ static av_cold int encode_init(AVCodecContext *avctx)
 
     if (mpeg12->tc_opt_str) {
         AVRational rate = ff_mpeg12_frame_rate_tab[mpeg12->frame_rate_index];
-        int ret = av_timecode_init_from_string(&mpeg12->tc, rate, mpeg12->tc_opt_str, s);
+        int ret = av_timecode_init_from_string(&mpeg12->tc, rate, mpeg12->tc_opt_str, avctx);
         if (ret < 0)
             return ret;
         mpeg12->drop_frame_timecode  = !!(mpeg12->tc.flags & AV_TIMECODE_FLAG_DROPFRAME);
@@ -332,7 +330,7 @@ static void mpeg1_encode_sequence_header(MpegEncContext *s)
     else
         /* VBV calculation: Scaled so that a VCD has the proper
          * VBV size of 40 kilobytes */
-        vbv_buffer_size = ((20 * s->bit_rate) / (1151929 / 2)) * 8 * 1024;
+        vbv_buffer_size = av_rescale_rnd(s->bit_rate, 20, 1151929 / 2, AV_ROUND_ZERO) * 8 * 1024;
     vbv_buffer_size = (vbv_buffer_size + 16383) / 16384;
 
     put_sbits(&s->pb, 18, v);
@@ -692,12 +690,12 @@ static inline void encode_dc(MpegEncContext *s, int diff, int component)
             put_bits(&s->pb,
                      ff_mpeg12_vlc_dc_lum_bits[index] + index,
                      (ff_mpeg12_vlc_dc_lum_code[index] << index) +
-                     av_mod_uintp2(diff, index));
+                     av_zero_extend(diff, index));
         else
             put_bits(&s->pb,
                      ff_mpeg12_vlc_dc_chroma_bits[index] + index,
                      (ff_mpeg12_vlc_dc_chroma_code[index] << index) +
-                     av_mod_uintp2(diff, index));
+                     av_zero_extend(diff, index));
     } else {
         if (component == 0)
             put_bits(&s->pb,
@@ -1098,12 +1096,12 @@ static av_cold void mpeg12_encode_init_static(void)
 
         bits = ff_mpeg12_vlc_dc_lum_bits[index] + index;
         code = (ff_mpeg12_vlc_dc_lum_code[index] << index) +
-               av_mod_uintp2(diff, index);
+               av_zero_extend(diff, index);
         mpeg1_lum_dc_uni[i + 255] = bits + (code << 8);
 
         bits = ff_mpeg12_vlc_dc_chroma_bits[index] + index;
         code = (ff_mpeg12_vlc_dc_chroma_code[index] << index) +
-               av_mod_uintp2(diff, index);
+               av_zero_extend(diff, index);
         mpeg1_chr_dc_uni[i + 255] = bits + (code << 8);
     }
 
@@ -1243,6 +1241,7 @@ const FFCodec ff_mpeg1video_encoder = {
     .p.supported_framerates = ff_mpeg12_frame_rate_tab + 1,
     .p.pix_fmts           = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV420P,
                                                            AV_PIX_FMT_NONE },
+    .color_ranges         = AVCOL_RANGE_MPEG,
     .p.capabilities       = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_SLICE_THREADS |
                             AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .caps_internal        = FF_CODEC_CAP_INIT_CLEANUP,
@@ -1262,6 +1261,7 @@ const FFCodec ff_mpeg2video_encoder = {
     .p.pix_fmts           = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV420P,
                                                            AV_PIX_FMT_YUV422P,
                                                            AV_PIX_FMT_NONE },
+    .color_ranges         = AVCOL_RANGE_MPEG,
     .p.capabilities       = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_SLICE_THREADS |
                             AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .caps_internal        = FF_CODEC_CAP_INIT_CLEANUP,

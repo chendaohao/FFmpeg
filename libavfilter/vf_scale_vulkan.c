@@ -20,10 +20,10 @@
 
 #include "libavutil/random_seed.h"
 #include "libavutil/opt.h"
+#include "libavutil/vulkan_spirv.h"
 #include "vulkan_filter.h"
-#include "vulkan_spirv.h"
 #include "scale_eval.h"
-#include "internal.h"
+#include "filters.h"
 #include "colorspace.h"
 #include "video.h"
 
@@ -38,10 +38,9 @@ typedef struct ScaleVulkanContext {
     FFVulkanContext vkctx;
 
     int initialized;
-    FFVulkanPipeline pl;
     FFVkExecPool e;
-    FFVkQueueFamilyCtx qf;
-    FFVkSPIRVShader shd;
+    AVVulkanDeviceQueueFamily *qf;
+    FFVulkanShader shd;
     VkSampler sampler;
 
     /* Push constants / options */
@@ -118,7 +117,7 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
     VkFilter sampler_mode;
     ScaleVulkanContext *s = ctx->priv;
     FFVulkanContext *vkctx = &s->vkctx;
-    FFVkSPIRVShader *shd = &s->shd;
+    FFVulkanShader *shd = &s->shd;
     FFVkSPIRVCompiler *spv;
     FFVulkanDescriptorSetBinding *desc;
 
@@ -143,21 +142,28 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
         return AVERROR_EXTERNAL;
     }
 
-    ff_vk_qf_init(vkctx, &s->qf, VK_QUEUE_COMPUTE_BIT);
-    RET(ff_vk_exec_pool_init(vkctx, &s->qf, &s->e, s->qf.nb_queues*4, 0, 0, 0, NULL));
-    RET(ff_vk_init_sampler(vkctx, &s->sampler, 0, sampler_mode));
-    RET(ff_vk_shader_init(&s->pl, &s->shd, "scale_compute",
-                          VK_SHADER_STAGE_COMPUTE_BIT, 0));
+    s->qf = ff_vk_qf_find(vkctx, VK_QUEUE_COMPUTE_BIT, 0);
+    if (!s->qf) {
+        av_log(ctx, AV_LOG_ERROR, "Device has no compute queues\n");
+        err = AVERROR(ENOTSUP);
+        goto fail;
+    }
 
-    ff_vk_shader_set_compute_sizes(&s->shd, 32, 32, 1);
+    RET(ff_vk_exec_pool_init(vkctx, s->qf, &s->e, s->qf->num*4, 0, 0, 0, NULL));
+    RET(ff_vk_init_sampler(vkctx, &s->sampler, 0, sampler_mode));
+    RET(ff_vk_shader_init(vkctx, &s->shd, "scale",
+                          VK_SHADER_STAGE_COMPUTE_BIT,
+                          NULL, 0,
+                          32, 32, 1,
+                          0));
 
     GLSLC(0, layout(push_constant, std430) uniform pushConstants {        );
     GLSLC(1,    mat4 yuv_matrix;                                          );
     GLSLC(0, };                                                           );
     GLSLC(0,                                                              );
 
-    ff_vk_add_push_constant(&s->pl, 0, sizeof(s->opts),
-                            VK_SHADER_STAGE_COMPUTE_BIT);
+    ff_vk_shader_add_push_const(&s->shd, 0, sizeof(s->opts),
+                                VK_SHADER_STAGE_COMPUTE_BIT);
 
     desc = (FFVulkanDescriptorSetBinding []) {
         {
@@ -171,7 +177,7 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
         {
             .name       = "output_img",
             .type       = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .mem_layout = ff_vk_shader_rep_fmt(s->vkctx.output_format),
+            .mem_layout = ff_vk_shader_rep_fmt(s->vkctx.output_format, FF_VK_REP_FLOAT),
             .mem_quali  = "writeonly",
             .dimensions = 2,
             .elems      = av_pix_fmt_count_planes(s->vkctx.output_format),
@@ -179,7 +185,7 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
         },
     };
 
-    RET(ff_vk_pipeline_descriptor_set_add(vkctx, &s->pl, shd, desc, 2, 0, 0));
+    RET(ff_vk_shader_add_descriptor_set(vkctx, &s->shd, desc, 2, 0, 0));
 
     GLSLD(   scale_bilinear                                                  );
 
@@ -247,12 +253,11 @@ static av_cold int init_filter(AVFilterContext *ctx, AVFrame *in)
         s->opts.yuv_matrix[3][3] = 1.0;
     }
 
-    RET(spv->compile_shader(spv, ctx, shd, &spv_data, &spv_len, "main",
+    RET(spv->compile_shader(vkctx, spv, shd, &spv_data, &spv_len, "main",
                             &spv_opaque));
-    RET(ff_vk_shader_create(vkctx, shd, spv_data, spv_len, "main"));
+    RET(ff_vk_shader_link(vkctx, shd, spv_data, spv_len, "main"));
 
-    RET(ff_vk_init_compute_pipeline(vkctx, &s->pl, shd));
-    RET(ff_vk_exec_pipeline_register(vkctx, &s->e, &s->pl));
+    RET(ff_vk_shader_register_exec(vkctx, &s->e, &s->shd));
 
     s->initialized = 1;
 
@@ -281,12 +286,17 @@ static int scale_vulkan_filter_frame(AVFilterLink *link, AVFrame *in)
     if (!s->initialized)
         RET(init_filter(ctx, in));
 
-    RET(ff_vk_filter_process_simple(&s->vkctx, &s->e, &s->pl, out, in,
+    RET(ff_vk_filter_process_simple(&s->vkctx, &s->e, &s->shd, out, in,
                                     s->sampler, &s->opts, sizeof(s->opts)));
 
     err = av_frame_copy_props(out, in);
     if (err < 0)
         goto fail;
+
+    if (out->width != in->width || out->height != in->height) {
+        av_frame_side_data_remove_by_props(&out->side_data, &out->nb_side_data,
+                                           AV_SIDE_DATA_PROP_SIZE_DEPENDENT);
+    }
 
     if (s->out_range != AVCOL_RANGE_UNSPECIFIED)
         out->color_range = s->out_range;
@@ -353,7 +363,6 @@ static void scale_vulkan_uninit(AVFilterContext *avctx)
     FFVulkanFunctions *vk = &vkctx->vkfn;
 
     ff_vk_exec_pool_free(vkctx, &s->e);
-    ff_vk_pipeline_free(vkctx, &s->pl);
     ff_vk_shader_free(vkctx, &s->shd);
 
     if (s->sampler)

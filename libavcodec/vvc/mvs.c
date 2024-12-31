@@ -399,7 +399,6 @@ static void store_cp_mv(const VVCLocalContext *lc, const MotionInfo *mi, const i
             const int offset = (y_cb * min_cb_width + x_cb) * MAX_CONTROL_POINTS;
 
             memcpy(&fc->tab.cp_mv[lx][offset], mi->mv[lx], sizeof(Mv) * num_cp_mv);
-            SAMPLE_CTB(fc->tab.mmi, x_cb, y_cb) = mi->motion_model_idc;
         }
     }
 }
@@ -545,25 +544,31 @@ typedef struct NeighbourContext {
     const VVCLocalContext *lc;
 } NeighbourContext;
 
+static int is_available(const VVCFrameContext *fc, const int x0, const int y0)
+{
+    const VVCSPS *sps      = fc->ps.sps;
+    const int x            = x0 >> sps->min_cb_log2_size_y;
+    const int y            = y0 >> sps->min_cb_log2_size_y;
+    const int min_cb_width = fc->ps.pps->min_cb_width;
+
+    return SAMPLE_CTB(fc->tab.cb_width[0], x, y) != 0;
+}
+
 static int is_a0_available(const VVCLocalContext *lc, const CodingUnit *cu)
 {
     const VVCFrameContext *fc   = lc->fc;
     const VVCSPS *sps           = fc->ps.sps;
-    const int x0b               = av_mod_uintp2(cu->x0, sps->ctb_log2_size_y);
+    const int x0b               = av_zero_extend(cu->x0, sps->ctb_log2_size_y);
     int cand_bottom_left;
 
     if (!x0b && !lc->ctb_left_flag) {
         cand_bottom_left = 0;
     } else {
-        const int log2_min_cb_size  = sps->min_cb_log2_size_y;
-        const int min_cb_width      = fc->ps.pps->min_cb_width;
-        const int x                 = (cu->x0 - 1) >> log2_min_cb_size;
-        const int y                 = (cu->y0 + cu->cb_height) >> log2_min_cb_size;
-        const int max_y             = FFMIN(fc->ps.pps->height, ((cu->y0 >> sps->ctb_log2_size_y) + 1) << sps->ctb_log2_size_y);
+        const int max_y = FFMIN(fc->ps.pps->height, ((cu->y0 >> sps->ctb_log2_size_y) + 1) << sps->ctb_log2_size_y);
         if (cu->y0 + cu->cb_height >= max_y)
             cand_bottom_left = 0;
         else
-            cand_bottom_left = SAMPLE_CTB(fc->tab.cb_width[0], x, y) != 0;
+            cand_bottom_left = is_available(fc, cu->x0 - 1, cu->y0 + cu->cb_height);
     }
     return cand_bottom_left;
 }
@@ -608,9 +613,9 @@ static int check_available(Neighbour *n, const VVCLocalContext *lc, const int ch
     if (!n->checked) {
         n->checked = 1;
         n->available = !sps->r->sps_entropy_coding_sync_enabled_flag || ((n->x >> sps->ctb_log2_size_y) <= (cu->x0 >> sps->ctb_log2_size_y));
-        n->available &= cu->pred_mode == pred_flag_to_mode(TAB_MVF(n->x, n->y).pred_flag);
+        n->available = n->available && is_available(fc, n->x, n->y) && cu->pred_mode == pred_flag_to_mode(TAB_MVF(n->x, n->y).pred_flag);
         if (check_mer)
-            n->available &= !is_same_mer(fc, n->x, n->y, cu->x0, cu->y0);
+            n->available = n->available && !is_same_mer(fc, n->x, n->y, cu->x0, cu->y0);
     }
     return n->available;
 }
@@ -1622,12 +1627,12 @@ static int ibc_spatial_candidates(const VVCLocalContext *lc, const int merge_idx
 
     init_neighbour_context(&nctx, lc);
 
-    if (check_available(a1, lc, 1)) {
+    if (check_available(a1, lc, 0)) {
         cand_list[num_cands++] = TAB_MVF(a1->x, a1->y).mv[L0];
         if (num_cands > merge_idx)
             return 1;
     }
-    if (check_available(b1, lc, 1)) {
+    if (check_available(b1, lc, 0)) {
         const MvField *mvf = &TAB_MVF(b1->x, b1->y);
         if (!num_cands || !IS_SAME_MV(&cand_list[0], mvf->mv)) {
             cand_list[num_cands++] = mvf->mv[L0];
@@ -1695,17 +1700,34 @@ static void ibc_merge_candidates(VVCLocalContext *lc, const int merge_idx, Mv *m
     memset(mv, 0, sizeof(*mv));
 }
 
-void ff_vvc_mvp_ibc(VVCLocalContext *lc, const int mvp_l0_flag, const int amvr_shift, Mv *mv)
+static int ibc_check_mv(VVCLocalContext *lc, Mv *mv)
+{
+    const VVCFrameContext *fc = lc->fc;
+    const VVCSPS *sps         = lc->fc->ps.sps;
+    const CodingUnit *cu      = lc->cu;
+    const Mv *bv              = &cu->pu.mi.mv[L0][0];
+
+    if (sps->ctb_size_y < ((cu->y0 + (bv->y >> 4)) & (sps->ctb_size_y - 1)) + cu->cb_height) {
+        av_log(fc->log_ctx, AV_LOG_ERROR, "IBC region spans multiple CTBs.\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    return 0;
+}
+
+int ff_vvc_mvp_ibc(VVCLocalContext *lc, const int mvp_l0_flag, const int amvr_shift, Mv *mv)
 {
     LOCAL_ALIGNED_8(Mv, mvp, [1]);
 
     ibc_merge_candidates(lc, mvp_l0_flag, mvp);
     ibc_add_mvp(mv, mvp, amvr_shift);
+    return ibc_check_mv(lc, mv);
 }
 
-void ff_vvc_luma_mv_merge_ibc(VVCLocalContext *lc, const int merge_idx, Mv *mv)
+int ff_vvc_luma_mv_merge_ibc(VVCLocalContext *lc, const int merge_idx, Mv *mv)
 {
     ibc_merge_candidates(lc, merge_idx, mv);
+    return ibc_check_mv(lc, mv);
 }
 
 static int affine_mvp_constructed_cp(NeighbourContext *ctx,

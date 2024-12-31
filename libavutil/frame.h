@@ -228,6 +228,21 @@ enum AVFrameSideDataType {
      * encoding.
      */
     AV_FRAME_DATA_VIDEO_HINT,
+
+    /**
+     * Raw LCEVC payload data, as a uint8_t array, with NAL emulation
+     * bytes intact.
+     */
+    AV_FRAME_DATA_LCEVC,
+
+    /**
+     * This side data must be associated with a video frame.
+     * The presence of this side data indicates that the video stream is
+     * composed of multiple views (e.g. stereoscopic 3D content,
+     * cf. H.264 Annex H or H.265 Annex G).
+     * The data is an int storing the view ID.
+     */
+    AV_FRAME_DATA_VIEW_ID,
 };
 
 enum AVActiveFormatDescription {
@@ -268,6 +283,20 @@ enum AVSideDataProps {
      * a single side data array.
      */
     AV_SIDE_DATA_PROP_MULTI  = (1 << 1),
+
+    /**
+     * Side data depends on the video dimensions. Side data with this property
+     * loses its meaning when rescaling or cropping the image, unless
+     * either recomputed or adjusted to the new resolution.
+     */
+    AV_SIDE_DATA_PROP_SIZE_DEPENDENT = (1 << 2),
+
+    /**
+     * Side data depends on the video color space. Side data with this property
+     * loses its meaning when changing the video color encoding, e.g. by
+     * adapting to a different set of primaries or transfer characteristics.
+     */
+    AV_SIDE_DATA_PROP_COLOR_DEPENDENT = (1 << 3),
 };
 
 /**
@@ -872,9 +901,10 @@ void av_frame_move_ref(AVFrame *dst, AVFrame *src);
  *           cases.
  *
  * @param frame frame in which to store the new buffers.
- * @param align Required buffer size alignment. If equal to 0, alignment will be
- *              chosen automatically for the current CPU. It is highly
- *              recommended to pass 0 here unless you know what you are doing.
+ * @param align Required buffer size and data pointer alignment. If equal to 0,
+ *              alignment will be chosen automatically for the current CPU.
+ *              It is highly recommended to pass 0 here unless you know what
+ *              you are doing.
  *
  * @return 0 on success, a negative AVERROR on error.
  */
@@ -1153,6 +1183,14 @@ const AVFrameSideData *av_frame_side_data_get(AVFrameSideData * const *sd,
  */
 void av_frame_side_data_remove(AVFrameSideData ***sd, int *nb_sd,
                                enum AVFrameSideDataType type);
+
+/**
+ * Remove and free all side data instances that match any of the given
+ * side data properties. (See enum AVSideDataProps)
+ */
+void av_frame_side_data_remove_by_props(AVFrameSideData ***sd, int *nb_sd,
+                                        int props);
+
 /**
  * @}
  */
